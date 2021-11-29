@@ -2,8 +2,9 @@
 # Copyright(c) 2010-2016 Intel Corporation
 
 # binary name
-APP = l3fwd
-
+APP = l2shaping
+RTE_SDK=/home/wanghaokun/dpdk-stable-19.11.4
+RTE_TARGET=x86_64-native-linuxapp-gcc
 # all source are stored in SRCS-y
 SRCS-y := main.c l3fwd_lpm.c 
 

@@ -242,27 +242,6 @@ int lpm_main_loop(__attribute__((unused)) void *dummy)
     return 0;
 }
 
-int print_main_loop_old(){
-	unsigned lcore_id;
-	uint64_t prev_tsc, diff_tsc, cur_tsc, timer_tsc;
-	uint64_t timer_period = 10;//10 second
-
-	uint64_t cycles=rte_rdtsc_precise();
-	prev_tsc = rte_rdtsc();
-	timer_tsc = 0;
-
-	while (!force_quit) {
-		cur_tsc = rte_rdtsc();
-		diff_tsc = cur_tsc - prev_tsc;
-		timer_tsc += diff_tsc;
-		if (timer_tsc >= timer_period * cycles) {
-			print_stats();
-			timer_tsc = 0;
-			prev_tsc = cur_tsc;
-		}
-	}
-}
-
 #define MAX_TIMER_PERIOD 86400 
 #define US_PER_S 1000000
 #define BURST_TX_DRAIN_US 100
@@ -299,131 +278,8 @@ int print_main_loop(){
 	}
 }
 
-int trans_main_loop_to_server()
-{
-    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-	int nb_trans,i,i2,n,enq_num,deq_num;
-	unsigned lcore_id;
-    int count;
-	struct rte_ipv4_hdr *ip_hdr;
-    struct rte_ether_hdr *eth_hdr;
-	struct rte_tcp_hdr *tcp_hdr;
-	struct rte_vlan_hdr *vhdr;
-	uint16_t ether_type;
-	char * payload;
-	packet_sent_to_server_without_payload=0;
-	packet_sent_to_server_high_pri=0;
-	packet_sent_to_server_low_pri=0;
-	packet_sent_to_server_with_payload_from_client=0;
-
-	lcore_id = rte_lcore_id();
-	fprintf(stderr,"lcore %d in trans_main_loop_to_server\n",lcore_id);
-    count = 0;
-
-    while (!force_quit) {
-		if(likely(count !=0)) {
-			nb_trans=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
-			count-=nb_trans;
-
-			deq_num=rte_ring_mc_dequeue_bulk(rte_list_trans_c2s, pkts_burst,nb_trans,NULL);
-			if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_trans,if deq_num==0,then continue
-				count=0;
-                continue;
-			}
-			else{
-				if(pkts_burst[0]->pkt_len>=0){
-					for(i2=0;i2<deq_num;i2++){
-						eth_hdr= rte_pktmbuf_mtod_offset(pkts_burst[i2], struct rte_ether_hdr * ,0 );
-						ether_type=rte_be_to_cpu_16(eth_hdr->ether_type);
-						if(ether_type==RTE_ETHER_TYPE_VLAN){
-							vhdr = (struct rte_vlan_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr));
-							if(rte_be_to_cpu_16(vhdr->eth_proto)==RTE_ETHER_TYPE_IPV4){
-								tcp_hdr = (struct rte_tcp_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr)+sizeof(struct rte_vlan_hdr)+sizeof(struct rte_ipv4_hdr));
-								pri_check(tcp_hdr);
-							}
-						}
-						else if(ether_type==RTE_ETHER_TYPE_IPV4){
-							tcp_hdr = (struct rte_tcp_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr)+sizeof(struct rte_ipv4_hdr));
-							pri_check(tcp_hdr);
-						}
-					}
-					
-					enq_num=rte_ring_mp_enqueue_bulk(rte_list_c2s, pkts_burst,nb_trans,NULL);
-					if(unlikely(enq_num!=nb_trans))	{
-						rte_exit(EXIT_FAILURE, "trans_main_loop_to_server lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans);
-					}
-				}
-				else{
-					n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_SERVER_WITHOUT_PAYLOAD, pkts_burst, nb_trans);
-					packet_sent_to_server_without_payload+=n;
-					if (unlikely(n < nb_trans)) {
-						enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_c2s, &pkts_burst[n],nb_trans-n,NULL);
-						if(unlikely(enq_num!=nb_trans-n))	{
-							rte_exit(EXIT_FAILURE, "trans_main_loop_to_server lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans-n);
-						}
-					}
-				}
-			}
-        }
-		else{
-			count =  rte_ring_count(rte_list_trans_c2s);
-		}
-    }
-	
-	fprintf(stderr,"lcore %d ,packet_sent_to_server_without_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_without_payload,rte_ring_count(rte_list_c2s));
-}
-
-int trans_main_loop_to_client(){
-    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-	int nb_trans,i,n,enq_num,deq_num;
-	unsigned lcore_id;
-    int count;
-	
-	packet_sent_to_client_without_payload=0;
-	lcore_id = rte_lcore_id();
-	fprintf(stderr,"lcore %d in trans_main_loop_to_client\n",lcore_id);
-    count = 0;
-
-    while (!force_quit) {
-		if(likely(count !=0)) {
-			nb_trans=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
-			count-=nb_trans;
-
-			deq_num=rte_ring_mc_dequeue_bulk(rte_list_trans_s2c, pkts_burst,nb_trans,NULL);
-			if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_trans,if deq_num==0,then continue
-				count=0;
-                continue;
-			}
-			else{
-				if(pkts_burst[0]->pkt_len>=0){
-					enq_num=rte_ring_mp_enqueue_bulk(rte_list_s2c, pkts_burst,nb_trans,NULL);
-					if(unlikely(enq_num!=nb_trans))	{
-						rte_exit(EXIT_FAILURE, "trans_main_loop_to_client lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans);
-					}
-				}
-				else{
-					n = rte_eth_tx_burst(PORT_TO_CLIENT, QUEUE_TO_CLIENT_WITHOUT_PAYLOAD, pkts_burst, nb_trans);
-					//fprintf(stderr,"lcore %d in trans_main_loop，send success!!!!!\n",lcore_id);
-					packet_sent_to_client_without_payload+=n;
-					if (unlikely(n < nb_trans)) {
-						enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_s2c, &pkts_burst[n],nb_trans-n,NULL);
-						if(unlikely(enq_num!=nb_trans-n))	{
-							rte_exit(EXIT_FAILURE, "trans_main_loop_to_client lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans-n);
-						}
-					}
-				}
-			}
-
-        }
-		else{
-			count =  rte_ring_count(rte_list_trans_s2c);
-		}
-    }
-	
-	fprintf(stderr,"lcore %d ,packet_sent_to_client_without_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_client_without_payload,rte_ring_count(rte_list_c2s));
-}
-
-/* receiver processing loop */
+/*C2S mean Client to Server direction */
+/* C2S receiver */
 int receive_main_loop_from_client(){
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
@@ -502,6 +358,186 @@ int receive_main_loop_from_client(){
 	return 0;
 }
 
+/* C2S filter */
+int trans_main_loop_to_server()
+{
+    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+	int nb_trans,i,i2,n,enq_num,deq_num;
+	unsigned lcore_id;
+    int count;
+	struct rte_ipv4_hdr *ip_hdr;
+    struct rte_ether_hdr *eth_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
+	struct rte_vlan_hdr *vhdr;
+	uint16_t ether_type;
+	char * payload;
+	packet_sent_to_server_without_payload=0;
+	packet_sent_to_server_high_pri=0;
+	packet_sent_to_server_low_pri=0;
+	packet_sent_to_server_with_payload_from_client=0;
+
+	lcore_id = rte_lcore_id();
+	fprintf(stderr,"lcore %d in trans_main_loop_to_server\n",lcore_id);
+    count = 0;
+
+    while (!force_quit) {
+		if(likely(count !=0)) {
+			nb_trans=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
+			count-=nb_trans;
+
+			deq_num=rte_ring_mc_dequeue_bulk(rte_list_trans_c2s, pkts_burst,nb_trans,NULL);
+			if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_trans,if deq_num==0,then continue
+				count=0;
+                continue;
+			}
+			else{/*filter loop*/
+				if(pkts_burst[0]->pkt_len>=0){
+					for(i2=0;i2<deq_num;i2++){
+						eth_hdr= rte_pktmbuf_mtod_offset(pkts_burst[i2], struct rte_ether_hdr * ,0 );
+						ether_type=rte_be_to_cpu_16(eth_hdr->ether_type);
+						if(ether_type==RTE_ETHER_TYPE_VLAN){
+							vhdr = (struct rte_vlan_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr));
+							if(rte_be_to_cpu_16(vhdr->eth_proto)==RTE_ETHER_TYPE_IPV4){
+								tcp_hdr = (struct rte_tcp_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr)+sizeof(struct rte_vlan_hdr)+sizeof(struct rte_ipv4_hdr));
+								pri_check(tcp_hdr);
+							}
+						}
+						else if(ether_type==RTE_ETHER_TYPE_IPV4){
+							tcp_hdr = (struct rte_tcp_hdr *)((uint8_t *)eth_hdr + sizeof(struct rte_ether_hdr)+sizeof(struct rte_ipv4_hdr));
+							pri_check(tcp_hdr);
+						}
+					}
+					
+					enq_num=rte_ring_mp_enqueue_bulk(rte_list_c2s, pkts_burst,nb_trans,NULL);
+					if(unlikely(enq_num!=nb_trans))	{
+						rte_exit(EXIT_FAILURE, "trans_main_loop_to_server lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans);
+					}
+				}
+				else{
+					n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_SERVER_WITHOUT_PAYLOAD, pkts_burst, nb_trans);
+					packet_sent_to_server_without_payload+=n;
+					if (unlikely(n < nb_trans)) {
+						enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_c2s, &pkts_burst[n],nb_trans-n,NULL);
+						if(unlikely(enq_num!=nb_trans-n))	{
+							rte_exit(EXIT_FAILURE, "trans_main_loop_to_server lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans-n);
+						}
+					}
+				}
+			}
+        }
+		else{
+			count =  rte_ring_count(rte_list_trans_c2s);
+		}
+    }
+	
+	fprintf(stderr,"lcore %d ,packet_sent_to_server_without_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_without_payload,rte_ring_count(rte_list_c2s));
+}
+
+/* C2S sender */
+int send_main_loop_to_server(){
+    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+	int nb_tx,i,n,enq_num,deq_num;
+	unsigned lcore_id;
+    unsigned int count;
+	packet_sent_to_server_with_payload=0;
+
+	lcore_id = rte_lcore_id();
+	fprintf(stderr,"lcore %d in send_main_loop_to_server\n",lcore_id);
+    count = 0;
+
+    while (!force_quit) {
+		if(send_state==TRUE){
+
+			if(likely(count !=0)) {
+				nb_tx=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
+				count-=nb_tx;
+				deq_num=rte_ring_mc_dequeue_bulk(rte_list_c2s, pkts_burst,nb_tx,NULL);
+				if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_tx,if deq_num==0,then continue
+					count=0;
+                    continue;
+				}
+				n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_SERVER_WITH_PAYLOAD, pkts_burst, nb_tx);
+				packet_sent_to_server_with_payload+=n;
+				if (unlikely(n < nb_tx)) {
+					enq_num=rte_ring_mp_enqueue_bulk(rte_list_c2s, &pkts_burst[n],nb_tx-n,NULL);
+					if(unlikely(enq_num!=nb_tx-n))	{
+						rte_exit(EXIT_FAILURE, "[%s] enq rte_list_c2s fail,[%d]\n",__func__,  __LINE__);	
+					}
+				}
+        	}
+			if(unlikely(count==0))
+				count =  rte_ring_count(rte_list_c2s);
+		}
+    }
+	fprintf(stderr,"lcore %d ,packet_sent_to_server_with_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_with_payload,rte_ring_count(rte_list_c2s));
+}
+
+/* C2S ratecontrol sender */
+int rate_control_send_main_loop(){
+    struct rte_mbuf *pkts_burst[(RATE_CONTROL*MAX_PKT_BURST/100)];//(RATE_CONTROL*MAX_PKT_BURST/100)
+	struct rte_mbuf *send_burst[MAX_PKT_BURST];
+	int nb_tx,n,n2,tmpn,enq_num,deq_num;
+	unsigned lcore_id;
+	uint16_t portid;
+	uint8_t queueid;
+	struct lcore_conf *qconf;
+    unsigned int count;
+	int sent_void_num=0;
+	int i,j,k;
+	uint32_t tmp_pkt_len=220;
+	int count1,count2,send_over_count,send_again_count,enq_again_count;
+	int c2,c4,ca;
+	c2=0;c4=0;ca=0;
+	send_again_count=0;
+	enq_again_count=0;
+	packet_sent_to_server_with_payload=0;
+	lcore_id = rte_lcore_id();
+	qconf = &lcore_conf[lcore_id];
+	fprintf(stderr,"lcore %d in send loop\n",lcore_id);
+    count = 0;
+
+    while (!force_quit) {
+		if(send_state==TRUE){
+			if(likely(count !=0)) {
+				nb_tx=(RATE_CONTROL*MAX_PKT_BURST/100);
+				count-=nb_tx;
+				deq_num=rte_ring_mc_dequeue_bulk(rte_list_c2s, pkts_burst,nb_tx,NULL);
+				
+				tmp_pkt_len=pkts_burst[0]->pkt_len;
+				get_void_packets(MAX_PKT_BURST,tmp_pkt_len);
+
+				i=0;j=0;k=0;
+				for(;i<MAX_PKT_BURST;i++){
+					if((i%10)>=(RATE_CONTROL/10)){
+						send_burst[i]=void_packs[tmp_pkt_len][k];
+						k++;
+					}
+					else{
+						send_burst[i]=pkts_burst[j];
+						j++;
+					}
+				}
+				n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_CLIENT_WITH_PAYLOAD,send_burst,MAX_PKT_BURST);
+
+				while(n<MAX_PKT_BURST){
+					tmpn=rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_CLIENT_WITH_PAYLOAD,&send_burst[n],MAX_PKT_BURST-n);
+					n+=tmpn;
+				}
+				packet_sent_to_server_with_payload+=nb_tx;
+
+        	}
+			if(unlikely(count==0))
+				count =  rte_ring_count(rte_list_c2s);
+
+		}
+    }
+	
+	fprintf(stderr,"lcore %d ,packet_sent_to_server_with_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_with_payload,rte_ring_count(rte_list_c2s));
+}
+
+
+/*S2C mean Server to Client direction */
+/*S2C receiver*/
 int receive_main_loop_from_server(){
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
@@ -576,107 +612,7 @@ int receive_main_loop_from_server(){
 	return 0;
 }
 
-int send_main_loop_to_server(){
-    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
-	int nb_tx,i,n,enq_num,deq_num;
-	unsigned lcore_id;
-    unsigned int count;
-	packet_sent_to_server_with_payload=0;
-
-	lcore_id = rte_lcore_id();
-	fprintf(stderr,"lcore %d in send_main_loop_to_server\n",lcore_id);
-    count = 0;
-
-    while (!force_quit) {
-		if(send_state==TRUE){
-
-			if(likely(count !=0)) {
-				nb_tx=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
-				count-=nb_tx;
-				deq_num=rte_ring_mc_dequeue_bulk(rte_list_c2s, pkts_burst,nb_tx,NULL);
-				if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_tx,if deq_num==0,then continue
-					count=0;
-                    continue;
-				}
-				n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_SERVER_WITH_PAYLOAD, pkts_burst, nb_tx);
-				packet_sent_to_server_with_payload+=n;
-				if (unlikely(n < nb_tx)) {
-					enq_num=rte_ring_mp_enqueue_bulk(rte_list_c2s, &pkts_burst[n],nb_tx-n,NULL);
-					if(unlikely(enq_num!=nb_tx-n))	{
-						rte_exit(EXIT_FAILURE, "[%s] enq rte_list_c2s fail,[%d]\n",__func__,  __LINE__);	
-					}
-				}
-        	}
-			if(unlikely(count==0))
-				count =  rte_ring_count(rte_list_c2s);
-		}
-    }
-	fprintf(stderr,"lcore %d ,packet_sent_to_server_with_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_with_payload,rte_ring_count(rte_list_c2s));
-}
-
-/*sender processing loop */
-int rate_control_send_main_loop(){
-    struct rte_mbuf *pkts_burst[(RATE_CONTROL*MAX_PKT_BURST/100)];//(RATE_CONTROL*MAX_PKT_BURST/100)
-	struct rte_mbuf *send_burst[MAX_PKT_BURST];
-	int nb_tx,n,n2,tmpn,enq_num,deq_num;
-	unsigned lcore_id;
-	uint16_t portid;
-	uint8_t queueid;
-	struct lcore_conf *qconf;
-    unsigned int count;
-	int sent_void_num=0;
-	int i,j,k;
-	uint32_t tmp_pkt_len=220;
-	int count1,count2,send_over_count,send_again_count,enq_again_count;
-	int c2,c4,ca;
-	c2=0;c4=0;ca=0;
-	send_again_count=0;
-	enq_again_count=0;
-	packet_sent_to_server_with_payload=0;
-	lcore_id = rte_lcore_id();
-	qconf = &lcore_conf[lcore_id];
-	fprintf(stderr,"lcore %d in send loop\n",lcore_id);
-    count = 0;
-
-    while (!force_quit) {
-		if(send_state==TRUE){
-			if(likely(count !=0)) {
-				nb_tx=(RATE_CONTROL*MAX_PKT_BURST/100);
-				count-=nb_tx;
-				deq_num=rte_ring_mc_dequeue_bulk(rte_list_c2s, pkts_burst,nb_tx,NULL);
-				
-				tmp_pkt_len=pkts_burst[0]->pkt_len;
-				get_void_packets(MAX_PKT_BURST,tmp_pkt_len);
-
-				i=0;j=0;k=0;
-				for(;i<MAX_PKT_BURST;i++){
-					if((i%10)>=(RATE_CONTROL/10)){
-						send_burst[i]=void_packs[tmp_pkt_len][k];
-						k++;
-					}
-					else{
-						send_burst[i]=pkts_burst[j];
-						j++;
-					}
-				}
-				n = rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_CLIENT_WITH_PAYLOAD,send_burst,MAX_PKT_BURST);
-
-				while(n<MAX_PKT_BURST){
-					tmpn=rte_eth_tx_burst(PORT_TO_SERVER, QUEUE_TO_CLIENT_WITH_PAYLOAD,&send_burst[n],MAX_PKT_BURST-n);
-					n+=tmpn;
-				}
-				packet_sent_to_server_with_payload+=nb_tx;
-
-        	}
-			if(unlikely(count==0))
-				count =  rte_ring_count(rte_list_c2s);
-
-		}
-    }
-	
-	fprintf(stderr,"lcore %d ,packet_sent_to_server_with_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_server_with_payload,rte_ring_count(rte_list_c2s));
-}
-
+/*S2C sender*/
 int send_main_loop_to_client(){
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	int nb_tx,i,n,enq_num,deq_num,fail_num;
@@ -715,7 +651,58 @@ int send_main_loop_to_client(){
 	lcore_id,packet_sent_to_client_with_payload,rte_ring_count(rte_list_s2c),fail_num);
 }
 
-/* policy maker processing loop */
+/*S2C filter*/
+int trans_main_loop_to_client(){
+    struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
+	int nb_trans,i,n,enq_num,deq_num;
+	unsigned lcore_id;
+    int count;
+	
+	packet_sent_to_client_without_payload=0;
+	lcore_id = rte_lcore_id();
+	fprintf(stderr,"lcore %d in trans_main_loop_to_client\n",lcore_id);
+    count = 0;
+
+    while (!force_quit) {
+		if(likely(count !=0)) {
+			nb_trans=(count>MAX_PKT_BURST)?MAX_PKT_BURST:count;
+			count-=nb_trans;
+
+			deq_num=rte_ring_mc_dequeue_bulk(rte_list_trans_s2c, pkts_burst,nb_trans,NULL);
+			if (unlikely(deq_num==0)){//cause deq_num is 0 either nb_trans,if deq_num==0,then continue
+				count=0;
+                continue;
+			}
+			else{
+				if(pkts_burst[0]->pkt_len>=0){
+					enq_num=rte_ring_mp_enqueue_bulk(rte_list_s2c, pkts_burst,nb_trans,NULL);
+					if(unlikely(enq_num!=nb_trans))	{
+						rte_exit(EXIT_FAILURE, "trans_main_loop_to_client lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans);
+					}
+				}
+				else{
+					n = rte_eth_tx_burst(PORT_TO_CLIENT, QUEUE_TO_CLIENT_WITHOUT_PAYLOAD, pkts_burst, nb_trans);
+					//fprintf(stderr,"lcore %d in trans_main_loop，send success!!!!!\n",lcore_id);
+					packet_sent_to_client_without_payload+=n;
+					if (unlikely(n < nb_trans)) {
+						enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_s2c, &pkts_burst[n],nb_trans-n,NULL);
+						if(unlikely(enq_num!=nb_trans-n))	{
+							rte_exit(EXIT_FAILURE, "trans_main_loop_to_client lcore enq rte_list_c2s fail,enq_num is %d,nb_rx is %d\n",enq_num,nb_trans-n);
+						}
+					}
+				}
+			}
+
+        }
+		else{
+			count =  rte_ring_count(rte_list_trans_s2c);
+		}
+    }
+	
+	fprintf(stderr,"lcore %d ,packet_sent_to_client_without_payload num is %d,now the ringcount is %d\n",lcore_id,packet_sent_to_client_without_payload,rte_ring_count(rte_list_c2s));
+}
+
+/*S2C policy maker*/
 int policy_main_loop(){
 	int current_count,last_count,change_count;
 	change_count=last_count=current_count=0;
@@ -953,8 +940,6 @@ lpm_get_ipv6_l3fwd_lookup_struct(const int socketid)
 {
 	return ipv6_l3fwd_lpm_lookup_struct[socketid];
 }
-
-
 
 
 /*edit */
@@ -1254,7 +1239,6 @@ int rate_control_tx_burst(uint16_t port_id,uint16_t queue_id,struct rte_mbuf ** 
 }
 
 
-
 void make_void_packs(int packet_size)
 {
     int ret=0; 
@@ -1281,6 +1265,6 @@ void get_void_packets(uint32_t burst_size,uint32_t packet_size)
         make_void_packs(packet_size);
     }
     for(i=0;i<burst_size;i++){
-        void_packs[packet_size][i]->refcnt=16;//anyway,  >1 is fine.
+        void_packs[packet_size][i]->refcnt=16;//any >1 number .
     }
 }
