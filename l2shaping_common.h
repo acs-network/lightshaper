@@ -4,10 +4,10 @@
  */
 
 
-#ifndef _L3FWD_COMMON_H_
-#define _L3FWD_COMMON_H_
+#ifndef _l2shaping_COMMON_H_
+#define _l2shaping_COMMON_H_
 
-#include "policy.h"
+#include "l2shaping_policy.h"
 
 #ifdef DO_RFC_1812_CHECKS
 
@@ -205,7 +205,7 @@ send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 			#if 1
 			//fprintf(stderr,"send_packetsx4 send fail,enq again,enque id is %d\n",qconf->tx_queue_id[port]);
 			int enq_num;
-			enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_c2s, &m[n],num-n,NULL);
+			enq_num=rte_ring_mp_enqueue_bulk(c2s_receive_queue, &m[n],num-n,NULL);
 			if(unlikely(enq_num!=num-n))	
 				fprintf(stderr,"send lcore enq fail,enq_num is %d,nb_rx is %d\n",enq_num,num-n);
 			#endif
@@ -276,4 +276,4 @@ send_packetsx4(struct lcore_conf *qconf, uint16_t port, struct rte_mbuf *m[],
 	qconf->tx_mbufs[port].len = len;
 }
 
-#endif /* _L3FWD_COMMON_H_ */
+#endif /* _l2shaping_COMMON_H_ */

@@ -1,0 +1,1 @@
+gcc -lm -g maketable.c -o maketable

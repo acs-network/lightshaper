@@ -6,19 +6,17 @@
 #define __L3_FWD_H__
 
 #include <rte_vect.h>
-#include "policy.h"
+#include "l2shaping_policy.h"
 
 #define DO_RFC_1812_CHECKS
 
-#define RTE_LOGTYPE_L3FWD RTE_LOGTYPE_USER1
+#define RTE_LOGTYPE_l2shaping RTE_LOGTYPE_USER1
 
 #if !defined(NO_HASH_MULTI_LOOKUP) && defined(RTE_MACHINE_CPUFLAG_NEON)
 #define NO_HASH_MULTI_LOOKUP 1
 #endif
 
-#define MAX_PKT_BURST     32
-
-
+#define MAX_PKT_BURST     100
 #define MAX_RX_QUEUE_PER_LCORE 16
 
 /*
@@ -42,10 +40,10 @@
 /* Hash parameters. */
 #ifdef RTE_ARCH_64
 /* default to 4 million hash entries (approx) */
-#define L3FWD_HASH_ENTRIES		(1024*1024*4)
+#define l2shaping_HASH_ENTRIES		(1024*1024*4)
 #else
 /* 32-bit has less address-space for hugepage memory, limit to 1M entries */
-#define L3FWD_HASH_ENTRIES		(1024*1024*1)
+#define l2shaping_HASH_ENTRIES		(1024*1024*1)
 #endif
 #define HASH_ENTRY_NUMBER_DEFAULT	4
 
@@ -70,10 +68,12 @@ struct lcore_conf {
 	void *ipv6_lookup_struct;
 } __rte_cache_aligned;
 
+
+
+
 extern volatile bool force_quit;
 
 /* ethernet addresses of ports */
-extern uint64_t dest_eth_addr[RTE_MAX_ETHPORTS];
 extern struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
@@ -83,7 +83,7 @@ extern uint32_t enabled_port_mask;
 extern int ipv6; /**< ipv6 is false by default. */
 extern uint32_t hash_entry_number;
 
-extern xmm_t val_eth[RTE_MAX_ETHPORTS];
+
 
 extern struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
@@ -108,7 +108,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint16_t port)
 		#if 1
 		//fprintf(stderr,"send_burst send fail,enq again,enque id is %d\n",qconf->tx_queue_id[port]);
 		int enq_num;
-		enq_num=rte_ring_mp_enqueue_bulk(rte_list_trans_c2s, &m_table[ret],n-ret,NULL);
+		enq_num=rte_ring_mp_enqueue_bulk(c2s_receive_queue, &m_table[ret],n-ret,NULL);
 		if(unlikely(enq_num!=n-ret))	
 			fprintf(stderr,"send lcore enq fail,enq_num is %d,nb_rx is %d\n",enq_num,n-ret);
 		#endif
@@ -199,9 +199,9 @@ lpm_main_loop(__attribute__((unused)) void *dummy);
 /* Return ipv4/ipv6 fwd lookup struct for LPM or EM. */
 
 void *
-lpm_get_ipv4_l3fwd_lookup_struct(const int socketid);
+lpm_get_ipv4_l2shaping_lookup_struct(const int socketid);
 
 void *
-lpm_get_ipv6_l3fwd_lookup_struct(const int socketid);
+lpm_get_ipv6_l2shaping_lookup_struct(const int socketid);
 
 #endif  /* __L3_FWD_H__ */

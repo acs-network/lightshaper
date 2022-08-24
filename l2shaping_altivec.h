@@ -4,83 +4,11 @@
  * All rights reserved.
  */
 
-#ifndef _L3FWD_ALTIVEC_H_
-#define _L3FWD_ALTIVEC_H_
+#ifndef _l2shaping_ALTIVEC_H_
+#define _l2shaping_ALTIVEC_H_
 
-#include "l3fwd.h"
-#include "l3fwd_common.h"
-
-/*
- * Update source and destination MAC addresses in the ethernet header.
- * Perform RFC1812 checks and updates for IPV4 packets.
- */
-static inline void
-processx4_step3(struct rte_mbuf *pkt[FWDSTEP], uint16_t dst_port[FWDSTEP])
-{
-	vector unsigned int te[FWDSTEP];
-	vector unsigned int ve[FWDSTEP];
-	vector unsigned int *p[FWDSTEP];
-
-	p[0] = rte_pktmbuf_mtod(pkt[0], vector unsigned int *);
-	p[1] = rte_pktmbuf_mtod(pkt[1], vector unsigned int *);
-	p[2] = rte_pktmbuf_mtod(pkt[2], vector unsigned int *);
-	p[3] = rte_pktmbuf_mtod(pkt[3], vector unsigned int *);
-
-	ve[0] = (vector unsigned int)val_eth[dst_port[0]];
-	te[0] = *p[0];
-
-	ve[1] = (vector unsigned int)val_eth[dst_port[1]];
-	te[1] = *p[1];
-
-	ve[2] = (vector unsigned int)val_eth[dst_port[2]];
-	te[2] = *p[2];
-
-	ve[3] = (vector unsigned int)val_eth[dst_port[3]];
-	te[3] = *p[3];
-
-	/* Update first 12 bytes, keep rest bytes intact. */
-	te[0] = (vector unsigned int)vec_sel(
-			(vector unsigned short)ve[0],
-			(vector unsigned short)te[0],
-			(vector unsigned short) {0, 0, 0, 0,
-						0, 0, 0xffff, 0xffff});
-
-	te[1] = (vector unsigned int)vec_sel(
-			(vector unsigned short)ve[1],
-			(vector unsigned short)te[1],
-			(vector unsigned short) {0, 0, 0, 0,
-						0, 0, 0xffff, 0xffff});
-
-	te[2] = (vector unsigned int)vec_sel(
-			(vector unsigned short)ve[2],
-			(vector unsigned short)te[2],
-			(vector unsigned short) {0, 0, 0, 0, 0,
-						0, 0xffff, 0xffff});
-
-	te[3] = (vector unsigned int)vec_sel(
-			(vector unsigned short)ve[3],
-			(vector unsigned short)te[3],
-			(vector unsigned short) {0, 0, 0, 0,
-						0, 0, 0xffff, 0xffff});
-
-	*p[0] = te[0];
-	*p[1] = te[1];
-	*p[2] = te[2];
-	*p[3] = te[3];
-
-	rfc1812_process((struct rte_ipv4_hdr *)
-			((struct rte_ether_hdr *)p[0] + 1),
-			&dst_port[0], pkt[0]->packet_type);
-	rfc1812_process((struct rte_ipv4_hdr *)
-			((struct rte_ether_hdr *)p[1] + 1),
-			&dst_port[1], pkt[1]->packet_type);
-	rfc1812_process((struct rte_ipv4_hdr *)
-			((struct rte_ether_hdr *)p[2] + 1),
-			&dst_port[2], pkt[2]->packet_type);
-	rfc1812_process((struct rte_ipv4_hdr *)
-			((struct rte_ether_hdr *)p[3] + 1),
-			&dst_port[3], pkt[3]->packet_type);
-}
+#include "l2shaping.h"
+#include "l2shaping_common.h"
 
 /*
  * Group consecutive packets with the same destination port in bursts of 4.
@@ -118,35 +46,6 @@ port_groupx4(uint16_t pn[FWDSTEP + 1], uint16_t *lp, vector unsigned short dp1,
 }
 
 /**
- * Process one packet:
- * Update source and destination MAC addresses in the ethernet header.
- * Perform RFC1812 checks and updates for IPV4 packets.
- */
-static inline void
-process_packet(struct rte_mbuf *pkt, uint16_t *dst_port)
-{
-	struct rte_ether_hdr *eth_hdr;
-	vector unsigned int te, ve;
-
-	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
-
-	te = *(vector unsigned int *)eth_hdr;
-	ve = (vector unsigned int)val_eth[dst_port[0]];
-
-	rfc1812_process((struct rte_ipv4_hdr *)(eth_hdr + 1), dst_port,
-			pkt->packet_type);
-
-	/* dynamically vec_sel te and ve for MASK_ETH (0x3f) */
-	te = (vector unsigned int)vec_sel(
-		(vector unsigned short)ve,
-		(vector unsigned short)te,
-		(vector unsigned short){0, 0, 0, 0,
-					0, 0, 0xffff, 0xffff});
-
-	*(vector unsigned int *)eth_hdr = te;
-}
-
-/**
  * Send packets burst from pkts_burst to the ports in dst_port array
  */
 static __rte_always_inline void
@@ -170,13 +69,13 @@ send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 		lp = pnum;
 		lp[0] = 1;
 
-		//processx4_step3(pkts_burst, dst_port);
+		
 
 		/* dp1: <d[0], d[1], d[2], d[3], ... > */
 		dp1 = *(vector unsigned short *)dst_port;
 
 		for (j = FWDSTEP; j != k; j += FWDSTEP) {
-			//processx4_step3(&pkts_burst[j], &dst_port[j]);
+			
 
 			/*
 			 * dp2:
@@ -217,17 +116,14 @@ send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 	/* Process up to last 3 packets one by one. */
 	switch (nb_rx % FWDSTEP) {
 	case 3:
-		//process_packet(pkts_burst[j], dst_port + j);
 		GROUP_PORT_STEP(dlp, dst_port, lp, pnum, j);
 		j++;
 		/* fall-through */
 	case 2:
-		//process_packet(pkts_burst[j], dst_port + j);
 		GROUP_PORT_STEP(dlp, dst_port, lp, pnum, j);
 		j++;
 		/* fall-through */
 	case 1:
-		//process_packet(pkts_burst[j], dst_port + j);
 		GROUP_PORT_STEP(dlp, dst_port, lp, pnum, j);
 		j++;
 	}
@@ -257,4 +153,4 @@ send_packets_multi(struct lcore_conf *qconf, struct rte_mbuf **pkts_burst,
 	}
 }
 
-#endif /* _L3FWD_ALTIVEC_H_ */
+#endif /* _l2shaping_ALTIVEC_H_ */

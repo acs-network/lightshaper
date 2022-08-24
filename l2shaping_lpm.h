@@ -2,11 +2,11 @@
  * Copyright(c) 2010-2016 Intel Corporation
  */
 
-#ifndef __L3FWD_LPM_H__
-#define __L3FWD_LPM_H__
+#ifndef __l2shaping_LPM_H__
+#define __l2shaping_LPM_H__
 
 static __rte_always_inline void
-l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
+l2shaping_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		struct lcore_conf *qconf)
 {
 	struct rte_ether_hdr *eth_hdr;
@@ -23,7 +23,7 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 #ifdef DO_RFC_1812_CHECKS
 		/* Check to make sure the packet is valid (RFC1812) */
 		if (is_valid_ipv4_pkt(ipv4_hdr, m->pkt_len) < 0) {
-			fprintf(stderr,"l3fwd_lpm_simple_forward 26 free packet\n");
+			fprintf(stderr,"l2shaping_lpm_simple_forward 26 free packet\n");
 			rte_pktmbuf_free(m);
 			return;
 		}
@@ -40,9 +40,6 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		--(ipv4_hdr->time_to_live);
 		++(ipv4_hdr->hdr_checksum);
 #endif
-		/* dst addr */
-//		*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
-
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
 				&eth_hdr->s_addr);
@@ -62,9 +59,6 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			(enabled_port_mask & 1 << dst_port) == 0)
 			dst_port = portid;
 
-		/* dst addr */
-//		*(uint64_t *)&eth_hdr->d_addr = dest_eth_addr[dst_port];
-
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
 				&eth_hdr->s_addr);
@@ -72,13 +66,13 @@ l3fwd_lpm_simple_forward(struct rte_mbuf *m, uint16_t portid,
 		send_single_packet(qconf, m, dst_port);
 	} else {
 		/* Free the mbuf that contains non-IPV4/IPV6 packet */
-		fprintf(stderr,"l3fwd_lpm_simple_forward 75 free packet\n");
+		fprintf(stderr,"l2shaping_lpm_simple_forward 75 free packet\n");
 		rte_pktmbuf_free(m);
 	}
 }
 
 static inline void
-l3fwd_lpm_no_opt_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
+l2shaping_lpm_no_opt_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 				uint16_t portid, struct lcore_conf *qconf)
 {
 	int32_t j;
@@ -91,12 +85,12 @@ l3fwd_lpm_no_opt_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 	for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
 		rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
 				j + PREFETCH_OFFSET], void *));
-		l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+		l2shaping_lpm_simple_forward(pkts_burst[j], portid, qconf);
 	}
 
 	/* Forward remaining prefetched packets */
 	for (; j < nb_rx; j++)
-		l3fwd_lpm_simple_forward(pkts_burst[j], portid, qconf);
+		l2shaping_lpm_simple_forward(pkts_burst[j], portid, qconf);
 }
 
-#endif /* __L3FWD_LPM_H__ */
+#endif /* __l2shaping_LPM_H__ */

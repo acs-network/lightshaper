@@ -45,8 +45,8 @@
 #include <cmdline_parse.h>
 #include <cmdline_parse_etheraddr.h>
 
-#include "l3fwd.h"
-#include "policy.h"
+#include "l2shaping.h"
+#include "l2shaping_policy.h"
 #include <unistd.h>
 #include <execinfo.h>
 #include <time.h>
@@ -72,8 +72,7 @@ static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 static int promiscuous_on;
 
 /* Select Longest-Prefix or Exact match. */
-static int l3fwd_lpm_on;
-static int l3fwd_em_on;
+static int l2shaping_lpm_on;
 
 /* Global variables. */
 
@@ -86,10 +85,8 @@ static int per_port_pool; /**< Use separate buffer pools per port; disabled */
 volatile bool force_quit;
 
 /* ethernet addresses of ports */
-uint64_t dest_eth_addr[RTE_MAX_ETHPORTS];
 struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
-xmm_t val_eth[RTE_MAX_ETHPORTS];
 
 /* mask of enabled ports */
 uint32_t enabled_port_mask;
@@ -99,17 +96,6 @@ int ipv6; /**< ipv6 is false by default. */
 uint32_t hash_entry_number = HASH_ENTRY_NUMBER_DEFAULT;
 
 struct lcore_conf lcore_conf[RTE_MAX_LCORE];
-
-/*edit*/
-struct rte_ring *rte_list_c2s;
-struct rte_ring *rte_list_s2c;
-struct rte_ring *rte_list_trans_c2s;
-struct rte_ring *rte_list_trans_s2c;
-
-struct rte_mempool *void_pack_pool;
-struct rte_mbuf *template_void_pack_mbuf;
-struct rte_mbuf *send_void_pack_mbufs[32];
-/*edit over*/ 
 
 struct lcore_params {
 	uint16_t port_id;
@@ -155,7 +141,7 @@ static struct rte_eth_conf port_conf = {
 static struct rte_mempool *pktmbuf_pool[RTE_MAX_ETHPORTS][NB_SOCKETS];
 static uint8_t lkp_per_socket[NB_SOCKETS];
 
-struct l3fwd_lkp_mode {
+struct l2shaping_lkp_mode {
 	void  (*setup)(int);
 	int   (*check_ptype)(int);
 	rte_rx_callback_fn cb_parse_ptype;
@@ -164,20 +150,16 @@ struct l3fwd_lkp_mode {
 	void* (*get_ipv6_lookup_struct)(int);
 };
 
-static struct l3fwd_lkp_mode l3fwd_lkp;
+static struct l2shaping_lkp_mode l2shaping_lkp;
 
-static struct l3fwd_lkp_mode l3fwd_lpm_lkp = {
+static struct l2shaping_lkp_mode l2shaping_lpm_lkp = {
 	.setup                  = setup_lpm,
 	.check_ptype		= lpm_check_ptype,
 	.cb_parse_ptype		= lpm_cb_parse_ptype,
 	.main_loop              = lpm_main_loop,
-	.get_ipv4_lookup_struct = lpm_get_ipv4_l3fwd_lookup_struct,
-	.get_ipv6_lookup_struct = lpm_get_ipv6_l3fwd_lookup_struct,
+	.get_ipv4_lookup_struct = lpm_get_ipv4_l2shaping_lookup_struct,
+	.get_ipv6_lookup_struct = lpm_get_ipv6_l2shaping_lookup_struct,
 };
-
-struct rte_mempool *produce_packs_pool;
-struct rte_mbuf* void_packs[MAX_VOID_PKT_LEN+1][MAX_VOID_BURST_SIZE];
-
 
 /*
  * Setup lookup methods for forwarding.
@@ -185,10 +167,10 @@ struct rte_mbuf* void_packs[MAX_VOID_PKT_LEN+1][MAX_VOID_BURST_SIZE];
  * are supported ones.
  */
 static void
-setup_l3fwd_lookup_tables(void)
+setup_l2shaping_lookup_tables(void)
 {
 	/* Setup HASH lookup functions. */
-		l3fwd_lkp = l3fwd_lpm_lkp;
+		l2shaping_lkp = l2shaping_lpm_lkp;
 }
 
 static int
@@ -420,32 +402,254 @@ parse_config(const char *q_arg)
 	return 0;
 }
 
-static void
-parse_eth_dest(const char *optarg)
+static int
+dist_trans(struct disttable *src,
+			struct disttable *dst,
+			int mu, int sigma)
 {
-	uint16_t portid;
-	char *port_end;
-	uint8_t c, *dest, peer_addr[6];
+	if(src->size!=dst->size||src==NULL||dst==NULL){
+		return -1;
+	}
+	int i=0;
+	int64_t t,x;
+	for(i=0;i<src->size;i++){
+    	t = src->table[i];
+    	x = (sigma % NETEM_DIST_SCALE) * t;
 
-	errno = 0;
-	portid = strtoul(optarg, &port_end, 10);
-	if (errno != 0 || port_end == optarg || *port_end++ != ',')
-		rte_exit(EXIT_FAILURE,
-		"Invalid eth-dest: %s", optarg);
-	if (portid >= RTE_MAX_ETHPORTS)
-		rte_exit(EXIT_FAILURE,
-		"eth-dest: port %d >= RTE_MAX_ETHPORTS(%d)\n",
-		portid, RTE_MAX_ETHPORTS);
+		if (x >= 0)
+			x += NETEM_DIST_SCALE/2;
+		else
+			x -= NETEM_DIST_SCALE/2;
+    
+		dst->table[i] = x / NETEM_DIST_SCALE + (sigma / NETEM_DIST_SCALE) * t + mu;
+	}
+	if(DELAY_PREC){
+		for(i=0;i<src->size;i++){
+			dst->table[i]=(dst->table[i]/DELAY_PREC)*DELAY_PREC;
+			
+			fprintf(stderr,"%s,src->%d is %lld,dst->%d is %lld\n",__func__,i,src->table[i],i,dst->table[i]);
+			src->table[i]=0;	
+		}
+	}
+	dst->size=src->size;
+	fprintf(stderr,"%lld\n",dst->table[IPV4_ADDR(192, 168, 112, 0)%dst->size]);
+	return 0;
+}
 
-	if (cmdline_parse_etheraddr(NULL, port_end,
-		&peer_addr, sizeof(peer_addr)) < 0)
-		rte_exit(EXIT_FAILURE,
-		"Invalid ethernet address: %s\n",
-		port_end);
-	dest = (uint8_t *)&dest_eth_addr[portid];
-	for (c = 0; c < 6; c++)
-		dest[c] = peer_addr[c];
-	*(uint64_t *)(val_eth + portid) = dest_eth_addr[portid];
+static int 
+parse_dist_table(const char *dist_file,int flag){
+	if(flag==1){
+		FILE *file;
+		char buf[1024] = "";  
+		char *iscomment,*next,*tmp;
+    	short i=0,num,length=0;
+		shaping_max=0;
+		shaping_min=0;
+
+		file=fopen(dist_file,"r");
+
+		if (file == NULL)
+    	{
+    	    fprintf(stderr,"dist_file open fail!\n");
+    	    exit(-1);
+    	}
+		int a=0;
+		while (fgets(buf, 1024, file)){
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+   	        	continue;
+			if (iscomment != NULL)  
+    	        *iscomment = 0;
+    	    next=strtok_r(buf," ",&tmp);
+    	    while(next!=NULL){
+    	        next=strtok_r(NULL," ",&tmp);
+    	        length++;
+    	    }
+		}
+    	shaping_dist=(struct disttable*)malloc(sizeof(struct disttable)+length*sizeof(int64_t));
+		if(shaping_dist==NULL){
+			fprintf(stderr,"shaping_dist malloc fail!\n");
+			exit(-1);
+		}
+    	shaping_dist->size=length;
+    	fprintf(stderr,"shaping_dist->size is %d\n",shaping_dist->size);
+
+    	int j=0;
+    	fseek(file, 0L, SEEK_SET);
+		fprintf(stderr,"\n");
+		while (fgets(buf, 1024, file)){
+
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+        	    continue;
+			if (iscomment != NULL)  
+        	    *iscomment = 0;
+        	next=strtok_r(buf," ",&tmp);
+        	while(next!=NULL){
+            	num= strtol(next, (char**)NULL, 10);
+            	shaping_dist->table[j]=num;
+            	j++;
+            	fprintf(stderr,"%d",num);
+            	next=strtok_r(NULL," ",&tmp);
+
+				if(num>shaping_max) 
+					shaping_max=num;
+				if(num<shaping_min) 
+					shaping_min=num;
+				fprintf(stderr,"\n");
+        	}
+		}
+		fseek(file, 0L, SEEK_SET);
+		fprintf(stderr,"\n");
+		double aaa;//check the rate in dist
+		while (fgets(buf, 1024, file)){
+
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+            	continue;
+			if (iscomment != NULL)  
+            	*iscomment = 0;
+        	next=strtok_r(buf," ",&tmp);
+        	while(next!=NULL){
+            	num= strtol(next, (char**)NULL, 10);
+				aaa=(num-shaping_min*1.0)/(shaping_max-shaping_min*1.0)*100.0;
+				aaa=( (double)( (int)( (aaa+0.005)*100 ) ) )/100;
+            	fprintf(stderr,"%f",aaa);
+            	next=strtok_r(NULL," ",&tmp);
+				fprintf(stderr,"\n");
+        	}
+		}
+
+    	fclose(file);
+		fprintf(stderr,"shaping_max is %d, shaping_min is %d \n",shaping_max,shaping_min);
+		return 0;
+	}
+	else if(flag==2){
+
+		FILE *file;
+		char buf[1024] = "";  
+		char *iscomment,*next,*tmp;
+    	int i=0,num,length=0;
+
+		file=fopen(dist_file,"r");
+
+		if (file == NULL)
+    	{
+    	    fprintf(stderr,"dist_file open fail!\n");
+    	    exit(-1);
+    	}
+		int a=0;
+		while (fgets(buf, 1024, file)){
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+   	        	continue;
+			if (iscomment != NULL)  
+    	        *iscomment = 0;
+    	    next=strtok_r(buf," ",&tmp);
+    	    while(next!=NULL){
+    	        next=strtok_r(NULL," ",&tmp);
+    	        length++;
+    	    }
+        
+		}
+    	gap_pool=(struct disttable*)malloc(sizeof(struct disttable)+length*sizeof(int64_t));
+		if(gap_pool==NULL){
+			fprintf(stderr,"gap_pool malloc fail!\n");
+			exit(-1);
+		}
+    	gap_pool->size=length;
+    	//fprintf(stderr,"gap_pool->size is %d\n",gap_pool->size);
+
+    	int j=0;
+    	fseek(file, 0L, SEEK_SET);
+		//fprintf(stderr,"\n");
+		while (fgets(buf, 1024, file)){ 
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+        	    continue;
+			if (iscomment != NULL)  
+        	    *iscomment = 0;
+        	next=strtok_r(buf," ",&tmp);
+        	while(next!=NULL){
+            	num= strtol(next, (char**)NULL, 10);
+            	gap_pool->table[j]=num;
+            	j++;
+            	//fprintf(stderr,"%d\n",num);
+                next=strtok_r(NULL," ",&tmp);
+        	}
+		}
+
+    	fclose(file);
+		return 0;  
+	}
+	else if(flag==3){
+
+		FILE *file;
+		char buf[1024] = "";  
+		char *iscomment,*next,*tmp;
+    	int i=0,num,length=0;
+
+		file=fopen(dist_file,"r");
+
+		if (file == NULL)
+    	{
+    	    fprintf(stderr,"dist_file open fail!\n");
+    	    exit(-1);
+    	}
+		int a=0;
+		while (fgets(buf, 1024, file)){
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+   	        	continue;
+			if (iscomment != NULL)  
+    	        *iscomment = 0;
+    	    next=strtok_r(buf," ",&tmp);
+    	    while(next!=NULL){
+    	        next=strtok_r(NULL," ",&tmp);
+    	        length++;
+    	    }
+        
+		}
+    	delay_dist=(struct disttable*)malloc(sizeof(struct disttable)+length*sizeof(int64_t));
+		if(delay_dist==NULL){
+			fprintf(stderr,"delay_dist malloc fail!\n");
+			exit(-1);
+		}
+    	delay_dist->size=length;
+    	fprintf(stderr,"delay_dist->size is %d\n",delay_dist->size);
+
+    	int j=0;
+    	fseek(file, 0L, SEEK_SET);
+		//fprintf(stderr,"\n");
+		while (fgets(buf, 1024, file)){ 
+			iscomment = strchr(buf, '#');
+			if (iscomment == buf) 
+        	    continue;
+			if (iscomment != NULL)  
+        	    *iscomment = 0;
+        	next=strtok_r(buf," ",&tmp);
+        	while(next!=NULL){
+            	num= strtol(next, (char**)NULL, 10);
+            	delay_dist->table[j]=num;
+            	//fprintf(stderr,"%lld\n",delay_dist->table[j]);
+                j++;
+		next=strtok_r(NULL," ",&tmp);
+        	}
+		}
+		delay_pool=(struct disttable*)malloc(sizeof(struct disttable)+delay_dist->size*sizeof(int64_t));
+		delay_pool->size=delay_dist->size;
+		dist_trans(delay_dist,delay_pool,DELAY_MEAN,DELAY_JITTER/4);/*
+		if(!dist_trans(delay_dist,delay_pool,DELAY_MEAN,DELAY_JITTER/4)){
+			fprintf(stderr," %s %dfail!!!!\n\n",__func__,__LINE__);
+			exit(-1);
+		}*/
+    	fclose(file);
+		return 0;
+	}
+	else{
+		fprintf(stderr,"func %s invalid parameter,line %d",__func__,__LINE__);
+		exit(-1);
+	}
 }
 
 #define MAX_JUMBO_PKT_LEN  9600
@@ -460,12 +664,14 @@ static const char short_options[] =
 
 #define CMD_LINE_OPT_CONFIG "config"
 #define CMD_LINE_OPT_ETH_DEST "eth-dest"
+#define CMD_LINE_OPT_DIST_TABLE "dist-table"
 #define CMD_LINE_OPT_NO_NUMA "no-numa"
 #define CMD_LINE_OPT_IPV6 "ipv6"
 #define CMD_LINE_OPT_ENABLE_JUMBO "enable-jumbo"
 #define CMD_LINE_OPT_HASH_ENTRY_NUM "hash-entry-num"
 #define CMD_LINE_OPT_PARSE_PTYPE "parse-ptype"
 #define CMD_LINE_OPT_PER_PORT_POOL "per-port-pool"
+
 enum {
 	/* long options mapped to a short option */
 
@@ -473,7 +679,7 @@ enum {
 	 * conflict with short options */
 	CMD_LINE_OPT_MIN_NUM = 256,
 	CMD_LINE_OPT_CONFIG_NUM,
-	CMD_LINE_OPT_ETH_DEST_NUM,
+	CMD_LINE_OPT_DIST_TABLE_NUM,
 	CMD_LINE_OPT_NO_NUMA_NUM,
 	CMD_LINE_OPT_IPV6_NUM,
 	CMD_LINE_OPT_ENABLE_JUMBO_NUM,
@@ -484,7 +690,7 @@ enum {
 
 static const struct option lgopts[] = {
 	{CMD_LINE_OPT_CONFIG, 1, 0, CMD_LINE_OPT_CONFIG_NUM},
-	{CMD_LINE_OPT_ETH_DEST, 1, 0, CMD_LINE_OPT_ETH_DEST_NUM},
+	{CMD_LINE_OPT_DIST_TABLE, 1, 0, CMD_LINE_OPT_DIST_TABLE_NUM},
 	{CMD_LINE_OPT_NO_NUMA, 0, 0, CMD_LINE_OPT_NO_NUMA_NUM},
 	{CMD_LINE_OPT_IPV6, 0, 0, CMD_LINE_OPT_IPV6_NUM},
 	{CMD_LINE_OPT_ENABLE_JUMBO, 0, 0, CMD_LINE_OPT_ENABLE_JUMBO_NUM},
@@ -538,12 +744,8 @@ parse_args(int argc, char **argv)
 			promiscuous_on = 1;
 			break;
 
-		case 'E':
-			l3fwd_em_on = 1;
-			break;
-
 		case 'L':
-			l3fwd_lpm_on = 1;
+			l2shaping_lpm_on = 1;
 			break;
 
 		/* long options */
@@ -556,8 +758,12 @@ parse_args(int argc, char **argv)
 			}
 			break;
 
-		case CMD_LINE_OPT_ETH_DEST_NUM:
-/*edit*/	//parse_eth_dest(optarg);
+		case CMD_LINE_OPT_DIST_TABLE_NUM:
+			ret=parse_dist_table(optarg,DIST_FLAG);
+			if(ret){
+				fprintf(stderr, "Invalid dist_table\n");
+				return -1;
+			}
 			break;
 
 		case CMD_LINE_OPT_NO_NUMA_NUM:
@@ -596,7 +802,7 @@ parse_args(int argc, char **argv)
 
 		case CMD_LINE_OPT_HASH_ENTRY_NUM_NUM:
 			ret = parse_hash_entry_number(optarg);
-			if ((ret > 0) && (ret <= L3FWD_HASH_ENTRIES)) {
+			if ((ret > 0) && (ret <= l2shaping_HASH_ENTRIES)) {
 				hash_entry_number = ret;
 			} else {
 				fprintf(stderr, "invalid hash entry number\n");
@@ -621,30 +827,8 @@ parse_args(int argc, char **argv)
 		}
 	}
 
-	/* If both LPM and EM are selected, return error. */
-	if (l3fwd_lpm_on && l3fwd_em_on) {
-		fprintf(stderr, "LPM and EM are mutually exclusive, select only one\n");
-		return -1;
-	}
-
-	/*
-	 * Nothing is selected, pick longest-prefix match
-	 * as default match.
-	 */
-	if (!l3fwd_lpm_on && !l3fwd_em_on) {
-		fprintf(stderr, "LPM or EM none selected, default LPM on\n");
-		l3fwd_lpm_on = 1;
-	}
-
-	/*
-	 * ipv6 and hash flags are valid only for
-	 * exact macth, reset them to default for
-	 * longest-prefix match.
-	 */
-	if (l3fwd_lpm_on) {
-		ipv6 = 0;
-		hash_entry_number = HASH_ENTRY_NUMBER_DEFAULT;
-	}
+	l2shaping_lpm_on = 1;
+	
 
 	if (optind >= 0)
 		argv[optind-1] = prgname;
@@ -704,15 +888,15 @@ init_mem(uint16_t portid, unsigned int nb_mbuf)
 			 * available socket.
 			 */
 			if (!lkp_per_socket[socketid]) {
-				l3fwd_lkp.setup(socketid);
+				l2shaping_lkp.setup(socketid);
 				lkp_per_socket[socketid] = 1;
 			}
 		}
 		qconf = &lcore_conf[lcore_id];
 		qconf->ipv4_lookup_struct =
-			l3fwd_lkp.get_ipv4_lookup_struct(socketid);
+			l2shaping_lkp.get_ipv4_lookup_struct(socketid);
 		qconf->ipv6_lookup_struct =
-			l3fwd_lkp.get_ipv6_lookup_struct(socketid);
+			l2shaping_lkp.get_ipv6_lookup_struct(socketid);
 	}
 	return 0;
 }
@@ -800,7 +984,7 @@ prepare_ptype_parser(uint16_t portid, uint16_t queueid)
 	if (parse_ptype) {
 		printf("Port %d: softly parse packet type info\n", portid);
 		if (rte_eth_add_rx_callback(portid, queueid,
-					    l3fwd_lkp.cb_parse_ptype,
+					    l2shaping_lkp.cb_parse_ptype,
 					    NULL))
 			return 1;
 
@@ -808,7 +992,7 @@ prepare_ptype_parser(uint16_t portid, uint16_t queueid)
 		return 0;
 	}
 
-	if (l3fwd_lkp.check_ptype(portid))
+	if (l2shaping_lkp.check_ptype(portid))
 		return 1;
 
 	printf("port %d cannot parse packet type, please add --%s\n",
@@ -818,7 +1002,6 @@ prepare_ptype_parser(uint16_t portid, uint16_t queueid)
 
 
 /*eidt*/
-
 void ShowStack(void)
 {
 	int i;
@@ -838,18 +1021,6 @@ void ShowStack(void)
 	}
  
 	free(symbols);
-}
- 
-void sigsegv_handler(int signo)
-{
-	if (signo == SIGSEGV) {
-		printf("Receive SIGSEGV signal\n");
-		printf("-----call stack-----\n");
-		ShowStack();
-		exit(-1);
-	} else {
-		printf("this is sig %d", signo);
-	}
 }
 
 int nano_delay(long delay)
@@ -871,7 +1042,6 @@ int nano_delay(long delay)
     }
     return ret;
 }
-
 
 static uint16_t
 rate_control_to_client(uint16_t port, uint16_t qidx __rte_unused,
@@ -913,19 +1083,13 @@ main(int argc, char **argv)
 
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
-	signal(SIGSEGV, sigsegv_handler);
-
-	/* pre-init dst MACs for all ports to 02:00:00:00:00:xx */
-	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
-		dest_eth_addr[portid] =
-			RTE_ETHER_LOCAL_ADMIN_ADDR + ((uint64_t)portid << 40);
-		*(uint64_t *)(val_eth + portid) = dest_eth_addr[portid];
-	}
+	
+	//signal(SIGSEGV, sigsegv_handler);
 
 	/* parse application arguments (after the EAL ones) */
 	ret = parse_args(argc, argv);
 	if (ret < 0)
-		rte_exit(EXIT_FAILURE, "Invalid L3FWD parameters\n");
+		rte_exit(EXIT_FAILURE, "Invalid l2shaping parameters\n");
 
 	if (check_lcore_params() < 0)
 		rte_exit(EXIT_FAILURE, "check_lcore_params failed\n");
@@ -942,15 +1106,25 @@ main(int argc, char **argv)
 	nb_lcores = rte_lcore_count();
 
 	/* Setup function pointers for lookup method. */
-	setup_l3fwd_lookup_tables();
+	setup_l2shaping_lookup_tables();
 
 	/*edit */
-	produce_packs_pool=rte_pktmbuf_pool_create("produce_packs_pool", 1048576, 0, 0,RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
+	produce_packs_pool=rte_pktmbuf_pool_create("produce_packs_pool", 2097152, 0, 0,RTE_MBUF_DEFAULT_BUF_SIZE, SOCKET_ID_ANY);
 	init_void_packets();
-	rte_list_c2s = rte_ring_create("Buffer_Ring0", RING_SIZE, SOCKET_ID_ANY,0);
-	rte_list_s2c = rte_ring_create("Buffer_Ring1", RING_SIZE, SOCKET_ID_ANY,0);
-	rte_list_trans_c2s= rte_ring_create("Buffer_Ring2", RING_SIZE, SOCKET_ID_ANY,0);
-	rte_list_trans_s2c= rte_ring_create("Buffer_Ring3", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_send_queue = rte_ring_create("Buffer_Ring0", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_send_queue_highpri= rte_ring_create("Buffer_Ring01", RING_SIZE, SOCKET_ID_ANY,0);
+	s2c_send_queue = rte_ring_create("Buffer_Ring1", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_receive_queue= rte_ring_create("Buffer_Ring2", RING_SIZE, SOCKET_ID_ANY,0);
+	s2c_receive_queue= rte_ring_create("Buffer_Ring3", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_drop_process_queue= rte_ring_create("Buffer_Ring4", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_delay_process_queue= rte_ring_create("Buffer_Ring5", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_dump_process_queue= rte_ring_create("Buffer_Ring6", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reorder_process_queue= rte_ring_create("Buffer_Ring7", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reframe_queue= rte_ring_create("Buffer_Ring  8", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reframe_queue0= rte_ring_create("Buffer_Ring  80", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reframe_queue1= rte_ring_create("Buffer_Ring  81", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reframe_queue2= rte_ring_create("Buffer_Ring  82", RING_SIZE, SOCKET_ID_ANY,0);
+	c2s_reframe_queue3= rte_ring_create("Buffer_Ring  83", RING_SIZE, SOCKET_ID_ANY,0);
 	/*edit over*/
 
 
@@ -1018,15 +1192,6 @@ main(int argc, char **argv)
 
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
-		print_ethaddr("Destination:",
-			(const struct rte_ether_addr *)&dest_eth_addr[portid]);
-		printf(", ");
-
-		/*
-		 * prepare src MACs for each port.
-		 */
-		rte_ether_addr_copy(&ports_eth_addr[portid],
-			(struct rte_ether_addr *)(val_eth + portid) + 1);
 
 		/* init memory */
 		if (!per_port_pool) {
@@ -1179,7 +1344,7 @@ main(int argc, char **argv)
 
 	ret = 0;
 	/* launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(l3fwd_lkp.main_loop, NULL, CALL_MASTER);
+	rte_eal_mp_remote_launch(lpm_main_loop, NULL, CALL_MASTER);
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0) {
 			ret = -1;
@@ -1199,7 +1364,6 @@ main(int argc, char **argv)
 	printf("Bye...\n");
 	return ret;
 }
-
 
 void init_void_packets(){
     int i,j;
