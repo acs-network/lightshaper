@@ -71,7 +71,7 @@ $ make
 $ ./run.sh 
 ```
 ### Release Note
-###  LightShaper V1.0 (August 24, 2022)
+### V1.0 (August 24, 2022)
 * **Rate control updated**
 
    In the current version, L2shaping is mainly used for mixing invalid packets of variable length for rate control.
