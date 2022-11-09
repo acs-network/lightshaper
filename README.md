@@ -1,4 +1,4 @@
-# L2shapingL2shaping
+# L2shaping
 
 L2shaping is a traffic shaping tool based on DPDK development. This tool mainly through accurate control the traffic workload rate, packet interval and other traffic characteristics , to achieve the simulation of multi-class network conditions.In detail,L2shaping buffer and transform the irregular traffic from the workload generator , make the traffic eventually reaches the server-side with the rate or packet interval distribution that simulate the actual scene, L2shaping provide rate control,packet interval distribution control, high latency simulation, in-flow out-of-order simulation, and packet loss simulation.L2shaping enables packet interval control with microsecond accuracy. 
 
