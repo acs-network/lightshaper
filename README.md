@@ -1,27 +1,27 @@
-# LightShaper
+# L2shapingL2shaping
 
-LightShaper is a traffic shaping tool based on DPDK development. This tool mainly through accurate control the traffic workload rate, packet interval and other traffic characteristics , to achieve the simulation of multi-class network conditions.In detail,LightShaper buffer and transform the irregular traffic from the workload generator , make the traffic eventually reaches the server-side with the rate or packet interval distribution that simulate the actual scene, LightShaper provide rate control,packet interval distribution control, high latency simulation, in-flow out-of-order simulation, and packet loss simulation.LightShaper enables packet interval control with microsecond accuracy. 
+L2shaping is a traffic shaping tool based on DPDK development. This tool mainly through accurate control the traffic workload rate, packet interval and other traffic characteristics , to achieve the simulation of multi-class network conditions.In detail,L2shaping buffer and transform the irregular traffic from the workload generator , make the traffic eventually reaches the server-side with the rate or packet interval distribution that simulate the actual scene, L2shaping provide rate control,packet interval distribution control, high latency simulation, in-flow out-of-order simulation, and packet loss simulation.L2shaping enables packet interval control with microsecond accuracy. 
 
 Supported features
  - Rate control
 
-    LightShaper uses placeholder pack filling for rate control. The granularity of the rate control is 0.01% of the line rate. 
+    L2shaping uses placeholder pack filling for rate control. The granularity of the rate control is 0.01% of the line rate. 
 
  - Packet interval distribution control
 
-    LightShaper supports setting the packet interval of microsecond accuracy, for example 50 microseconds. Based on the packet interval control, LightShaper provides the function of shaping the packet interval distribution image of the test load, for example, shaping the packet interval of the traffic load into a fixed interval or random distribution interval.
+    L2shaping supports setting the packet interval of microsecond accuracy, for example 50 microseconds. Based on the packet interval control, L2shaping provides the function of shaping the packet interval distribution image of the test load, for example, shaping the packet interval of the traffic load into a fixed interval or random distribution interval.
 
  - Delay simulation
 
-    LightShaper realizes the simulation of fixed delay and random delay. In the stochastic delay, the stochastic fluctuation delay with correlation coefficient and the distributed delay conforming to the statistical distribution model are provided.
+    L2shaping realizes the simulation of fixed delay and random delay. In the stochastic delay, the stochastic fluctuation delay with correlation coefficient and the distributed delay conforming to the statistical distribution model are provided.
 
  - Out-of-order Simulation
 
-    LightShaper implements a specified proportion of in-flow out-of-order for a specified range of streams.
+    L2shaping implements a specified proportion of in-flow out-of-order for a specified range of streams.
 
  - Statistical distribution support
 
-    LightShaper supports specific statistical distribution in terms of packet interval distribution and delay distribution.
+    L2shaping supports specific statistical distribution in terms of packet interval distribution and delay distribution.
 
     You can use the tool in the **tools** directory to generate a distribution model file using the distribution data and configure the model file in run.sh.
 
@@ -54,11 +54,11 @@ $ ./dpdk-setup.sh
      - Press [62] Exit Script to quit the tool
 ```
 
-### Setup LightShaper
+### Setup L2shaping
 
 #### Compile
 ```bash
-$ cd <path to LightShaper>
+$ cd <path to L2shaping>
 $ vim Makefile
   # Add two configurations at the beginning as below
   RTE_SDK= <dpdk-home-path>
@@ -74,7 +74,7 @@ $ ./run.sh
 ###  V1.0 (August 24, 2022)
 * **Rate control updated**
 
-   In the current version, LightShaper is mainly used for mixing invalid packets of variable length for rate control.
+   In the current version, L2shaping is mainly used for mixing invalid packets of variable length for rate control.
 
 * **Features added**
 
@@ -95,7 +95,7 @@ $ ./run.sh
 
 ## Acknowledgments
 
-LightShaper is a traffic shaping tool based on DPDK development. The version 1.0 is able to support 10Gps traffic input&output. The work was supported by the Strategic Priority Research Program of the Chinese Academy of Sciences under Grant No. XDA06010401, the National Key Research and Development Program of China under Grant No. 2016YFB1000203 & 2017YFB1001602. We appreciated project leaders, Prof. Xu Zhiwei, Prof. Chen Mingyu and Prof. Bao Yungang, for their selfless support and guidance.
+L2shaping is a traffic shaping tool based on DPDK development. The version 1.0 is able to support 10Gps traffic input&output. The work was supported by the Strategic Priority Research Program of the Chinese Academy of Sciences under Grant No. XDA06010401, the National Key Research and Development Program of China under Grant No. 2016YFB1000203 & 2017YFB1001602. We appreciated project leaders, Prof. Xu Zhiwei, Prof. Chen Mingyu and Prof. Bao Yungang, for their selfless support and guidance.
 
 
 ## Contacts
